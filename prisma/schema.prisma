@@ -1,0 +1,262 @@
+// CIE Physics AI Revision Platform - Prisma Schema
+// MVP: 8 core models
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── AUTH (NextAuth.js v5) ──────────────────────────────────
+
+model User {
+  id             String    @id @default(cuid())
+  name           String?
+  email          String?   @unique
+  emailVerified  DateTime?
+  image          String?
+  hashedPassword String?
+  level          UserLevel @default(IGCSE)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  accounts        Account[]
+  sessions        Session[]
+  practiceSessions PracticeSession[]
+  userProgress    UserProgress[]
+
+  @@index([email])
+}
+
+enum UserLevel {
+  IGCSE
+  AS_LEVEL
+  A_LEVEL
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── SYLLABUS (Knowledge Graph) ────────────────────────────
+
+model Subject {
+  id        String   @id @default(cuid())
+  name      String                  // "Physics"
+  code      String   @unique       // "0625" (IGCSE) or "9702" (A-Level)
+  level     UserLevel
+  createdAt DateTime @default(now())
+
+  topics           Topic[]
+  questions        Question[]
+  practiceSessions PracticeSession[]
+}
+
+model Topic {
+  id          String    @id @default(cuid())
+  name        String                  // e.g. "Kinematics"
+  description String?                 // Syllabus excerpt
+  orderIndex  Int       @default(0)
+  parentId    String?                 // Self-reference for hierarchy (topic > subtopic)
+  subjectId   String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  subject     Subject    @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  parent      Topic?     @relation("TopicHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children      Topic[]         @relation("TopicHierarchy")
+  questions     Question[]
+  userProgress  UserProgress[]
+
+  @@index([subjectId])
+  @@index([parentId])
+}
+
+// ─── QUESTION BANK ─────────────────────────────────────────
+
+model Question {
+  id            String        @id @default(cuid())
+  subjectId     String
+  topicId       String
+  subtopicId    String?
+  questionType  QuestionType
+  difficulty    Difficulty
+  stems         String[]                     // Question text parts (supports multi-part)
+  options       Json?                        // MCQ: [{label, text, isCorrect}], null for non-MCQ
+  correctAnswer String                       // MCQ: "A" | Numeric: "9.81" | Text: short answer
+  answerUnit    String?                      // e.g. "m/s^2", null if unitless
+  marks         Int        @default(1)
+  explanation   String?                      // Model answer / step-by-step solution
+  ciePaperRef   String?                      // e.g. "0625/41/M/J/23 Q3"
+  source        QuestionSource @default(MANUAL)
+  isVerified    Boolean    @default(false)
+  usageCount    Int        @default(0)
+  successRate   Float?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  subject          Subject            @relation(fields: [subjectId], references: [id])
+  topic            Topic              @relation(fields: [topicId], references: [id])
+  responses        PracticeResponse[]
+
+  @@index([subjectId, topicId, difficulty])
+  @@index([questionType])
+  @@index([difficulty])
+}
+
+enum QuestionType {
+  MCQ
+  NUMERIC
+  TEXT
+  MULTI_PART
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+  VERY_HARD
+}
+
+enum QuestionSource {
+  MANUAL
+  AI_GENERATED
+  PDF_EXTRACTED
+}
+
+// ─── PRACTICE ──────────────────────────────────────────────
+
+model PracticeSession {
+  id             String        @id @default(cuid())
+  userId         String
+  subjectId      String
+  mode           PracticeMode
+  status         SessionStatus @default(IN_PROGRESS)
+  totalQuestions Int           @default(0)
+  answeredCount  Int           @default(0)
+  correctCount   Int           @default(0)
+  score          Float?
+  startedAt      DateTime      @default(now())
+  completedAt    DateTime?
+  metadata       Json?
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject   Subject            @relation(fields: [subjectId], references: [id])
+  responses PracticeResponse[]
+
+  @@index([userId, startedAt])
+  @@index([status])
+}
+
+enum PracticeMode {
+  ADAPTIVE
+  TOPIC_FOCUSED
+  MISTAKE_REVIEW
+  QUICK_DRILL
+}
+
+enum SessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+model PracticeResponse {
+  id              String    @id @default(cuid())
+  sessionId       String
+  questionId      String
+  userAnswer      String?
+  isCorrect       Boolean
+  timeTakenSec    Int?
+  isMarkedForReview Boolean @default(false)
+  respondedAt     DateTime  @default(now())
+
+  session         PracticeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question        Question        @relation(fields: [questionId], references: [id])
+
+  aiExplanations  AiExplanation[]
+
+  @@index([sessionId])
+  @@index([questionId])
+  @@unique([sessionId, questionId])
+}
+
+// ─── AI TUTOR ──────────────────────────────────────────────
+
+model AiExplanation {
+  id               String    @id @default(cuid())
+  responseId       String
+  type             ExplanationType
+  content          String                       // Markdown explanation text
+  promptTokens     Int?
+  completionTokens Int?
+  modelUsed        String?
+  createdAt        DateTime  @default(now())
+
+  response         PracticeResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+
+  @@index([responseId])
+}
+
+enum ExplanationType {
+  WRONG_ANSWER
+  STEP_BY_STEP
+  CONCEPT_REVIEW
+  EXAM_TIP
+}
+
+// ─── USER PROGRESS ─────────────────────────────────────────
+
+model UserProgress {
+  id                String    @id @default(cuid())
+  userId            String
+  topicId           String?
+  subtopicId        String?
+  masteryLevel      Float     @default(0.0)    // 0.0 to 1.0
+  questionsAnswered Int       @default(0)
+  questionsCorrect  Int       @default(0)
+  streakCount       Int       @default(0)
+  lastPracticedAt   DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topic Topic? @relation(fields: [topicId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, topicId, subtopicId])
+  @@index([userId])
+}
